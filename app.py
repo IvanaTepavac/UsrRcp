@@ -6,7 +6,10 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from marshmallow import ValidationError
 from sqlalchemy.sql.functions import count
+from werkzeug.security import generate_password_hash
 
+from my_clearbit import get_user_and_company_data
+from my_hunter import email_verification
 from schema import user_registration_schema, recipe_creation_schema, recipe_rating_schema
 
 app = Flask(__name__)
@@ -71,15 +74,30 @@ def token_required(f):
 @app.route('/registration', methods=['POST'])
 def registration():
     try:
-        user = user_registration_schema.load(request.get_json())
+        data = user_registration_schema.load(request.get_json())
     except ValidationError as err:
         return err.messages, 400
 
-    new_user = User(first_name=user['first_name'],
-                    last_name=user['last_name'],
-                    email=user['email'],
-                    username=user['username'],
-                    password=user['password'])
+    user = User.query.filter_by(username=data['username']).first()
+    if user:
+        return jsonify({"message": 'User with that username already exists.'}), 400
+    hashed_password = generate_password_hash(data['password'], method='sha256')
+
+    #  hunter for verifying email
+    email = data['email']
+    if not email_verification(email):
+        return jsonify({'message': 'Invalid email'}), 400
+
+    #  clearbit for getting additional user or company data
+    get_user_and_company_data(email)
+
+    new_user = User(first_name=data['first_name'],
+                    last_name=data['last_name'],
+                    email=data['email'],
+                    username=data['username'],
+                    password=hashed_password)
+
+    print(hashed_password)
 
     db.session.add(new_user)
     db.session.commit()
@@ -103,7 +121,7 @@ def login():
 
 @app.route('/creation', methods=['POST'])
 @token_required
-def create(current_user):
+def creation(current_user):
     try:
         data = recipe_creation_schema.load(request.get_json())
     except ValidationError as err:
@@ -181,7 +199,8 @@ def get_rcp(rcp):
             "name": a.name,
             "ingredients": a.r_ingredients,
             "text": a.text,
-            "rating": a.rating
+            "rating": a.rating,
+            "user_id": a.user_id
         }
 
         everything.append(recipe)
@@ -219,6 +238,49 @@ def top_ing():
         list1.append({t.name: len(t.recipe)})
 
     return jsonify({"Most used ingredients are": list1}), 200
+
+
+@app.route('/rcp_by_name/<name>')
+def rcp_by_name(name):
+    r = Recipe.query.filter_by(name=name).all()
+    recipe = get_rcp(r)
+    return jsonify({"The required recipe is": recipe}), 200
+
+
+@app.route('/rcp_by_ing/<ing>')
+def rcp_by_ing(ing):
+    r = Recipe.query.filter_by(r_ingredients=ing).all()
+    recipe = get_rcp(r)
+    return jsonify({"The required recipe is": recipe}), 200
+
+
+@app.route('/rcp_by_text/<text>')
+def rcp_by_text(text):
+    r = Recipe.query.filter_by(text=text).all()
+    recipe = get_rcp(r)
+    return jsonify({"The required recipe is": recipe}), 200
+
+
+@app.route('/max_ing')
+def max_ing():
+    r = db.session.query(Recipe)\
+        .select_from(Ingredients)\
+        .join(Ingredients.recipe)\
+        .group_by(Recipe.id)\
+        .order_by(count(Ingredients.id).desc()).limit(1)
+    recipe = get_rcp(r)
+    return jsonify({"Recipe with maximum number of ingredients is": recipe}), 200
+
+
+@app.route('/min_ing')
+def min_ing():
+    r = db.session.query(Recipe)\
+        .select_from(Ingredients)\
+        .join(Ingredients.recipe)\
+        .group_by(Recipe.id)\
+        .order_by(count(Ingredients.id).asc()).limit(1)
+    recipe = get_rcp(r)
+    return jsonify({"Recipe with minimum number of ingredients is": recipe}), 200
 
 
 if __name__ == '__main__':
