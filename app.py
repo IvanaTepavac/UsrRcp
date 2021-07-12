@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from marshmallow import ValidationError
 from sqlalchemy.sql.functions import count
-from werkzeug.security import generate_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 
 from my_clearbit import get_user_and_company_data
 from my_hunter import email_verification
@@ -15,6 +15,7 @@ from schema import user_registration_schema, recipe_creation_schema, recipe_rati
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'nestotesko'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://ivana:ivana1@localhost:5432/UsrRcp'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
@@ -38,7 +39,6 @@ class Recipe(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(30))
     text = db.Column(db.String(300))
-    r_ingredients = db.Column(db.String(200))
     r_sum = db.Column(db.Integer)
     r_count = db.Column(db.Integer)
     rating = db.Column(db.Float)
@@ -97,8 +97,6 @@ def registration():
                     username=data['username'],
                     password=hashed_password)
 
-    print(hashed_password)
-
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"message": f'User {new_user.first_name} has been created successfully.'}), 200
@@ -110,7 +108,7 @@ def login():
     user = User.query.filter_by(username=data['username']).first()
     if not user:
         return jsonify({'message': 'User with that username does not exist'}), 401
-    if user.password != data['password']:
+    if not check_password_hash(user.password, data['password']):
         return jsonify({'message': 'Invalid password.'}), 401
 
     token = jwt.encode(
@@ -129,14 +127,13 @@ def creation(current_user):
 
     name = data['name']
     text = data['text']
-    ingredients = data['r_ingredients'].replace(',', ' ').split()
+    ingredients = [x.strip() for x in data['r_ingredients'].split(',')]
 
     old_recipe = Recipe.query.filter_by(name=name).first()
     if old_recipe:
         return jsonify({"message": f'Recipe {name} already exists.'}), 200
 
     new_recipe = Recipe(name=name,
-                        r_ingredients=str(ingredients),
                         text=text,
                         user_id=current_user.id,
                         r_sum=0,
@@ -149,7 +146,7 @@ def creation(current_user):
     db_ingredients = Ingredients.query.with_entities(Ingredients.name).all()
     db_ingredients_list = [r for (r,) in db_ingredients]
 
-    for ingredient in list(ingredients):
+    for ingredient in ingredients:
         if ingredient not in db_ingredients_list:
             new_ingredient = Ingredients(name=ingredient)
             db.session.add(new_ingredient)
@@ -184,7 +181,7 @@ def rating(current_user):
 
     recipe.r_sum += r_rating
     recipe.r_count += 1
-    recipe.rating = round(recipe.r_sum/recipe.r_count, 2)
+    recipe.rating = round(recipe.r_sum / recipe.r_count, 2)
 
     db.session.commit()
 
@@ -197,7 +194,7 @@ def get_rcp(rcp):
         recipe = {
             "id": a.id,
             "name": a.name,
-            "ingredients": a.r_ingredients,
+            "ingredients": [ingredient.name for ingredient in a.ingredients],
             "text": a.text,
             "rating": a.rating,
             "user_id": a.user_id
@@ -227,10 +224,10 @@ def my_recipes(current_user):
 
 @app.route('/top_ing')
 def top_ing():
-    top = db.session.query(Ingredients)\
-        .select_from(Recipe)\
-        .join(Ingredients.recipe)\
-        .group_by(Ingredients.id)\
+    top = db.session.query(Ingredients) \
+        .select_from(Recipe) \
+        .join(Ingredients.recipe) \
+        .group_by(Ingredients.id) \
         .order_by(count(Recipe.id).desc()).limit(5)
 
     list1 = []
@@ -261,12 +258,30 @@ def rcp_by_text(text):
     return jsonify({"The required recipe is": recipe}), 200
 
 
+#  recipe by name, ingredients, text in one function
+@app.route('/search')
+def search():
+    name = request.args.get('name')
+    ingredient = request.args.get('ingredient')
+    text = request.args.get('text')
+    recipes_by_name = Recipe.query.filter_by(name=name)
+    recipes_by_ingredient = db.session.query(Recipe) \
+        .select_from(Ingredients) \
+        .join(Ingredients.recipe) \
+        .filter(Ingredients.name == ingredient)
+    recipes_by_text = Recipe.query.filter(Recipe.text.like(f'%{text}%'))
+    r = recipes_by_name.union(recipes_by_ingredient).union(recipes_by_text).all()
+
+    all_recipes = get_rcp(r)
+    return {'Recipes': all_recipes}
+
+
 @app.route('/max_ing')
 def max_ing():
-    r = db.session.query(Recipe)\
-        .select_from(Ingredients)\
-        .join(Ingredients.recipe)\
-        .group_by(Recipe.id)\
+    r = db.session.query(Recipe) \
+        .select_from(Ingredients) \
+        .join(Ingredients.recipe) \
+        .group_by(Recipe.id) \
         .order_by(count(Ingredients.id).desc()).limit(1)
     recipe = get_rcp(r)
     return jsonify({"Recipe with maximum number of ingredients is": recipe}), 200
@@ -274,10 +289,10 @@ def max_ing():
 
 @app.route('/min_ing')
 def min_ing():
-    r = db.session.query(Recipe)\
-        .select_from(Ingredients)\
-        .join(Ingredients.recipe)\
-        .group_by(Recipe.id)\
+    r = db.session.query(Recipe) \
+        .select_from(Ingredients) \
+        .join(Ingredients.recipe) \
+        .group_by(Recipe.id) \
         .order_by(count(Ingredients.id).asc()).limit(1)
     recipe = get_rcp(r)
     return jsonify({"Recipe with minimum number of ingredients is": recipe}), 200
