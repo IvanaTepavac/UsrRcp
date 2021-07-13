@@ -38,6 +38,7 @@ recipe_ingredients = db.Table('recipe_ingredients',
 class Recipe(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(30))
+    r_ingredients = db.Column(db.String(200))
     text = db.Column(db.String(300))
     r_sum = db.Column(db.Integer)
     r_count = db.Column(db.Integer)
@@ -80,7 +81,7 @@ def registration():
 
     user = User.query.filter_by(username=data['username']).first()
     if user:
-        return jsonify({"message": 'User with that username already exists.'}), 400
+        return jsonify({"message": 'User with that username already exists. Please Log in'}), 400
     hashed_password = generate_password_hash(data['password'], method='sha256')
 
     #  hunter for verifying email
@@ -126,8 +127,8 @@ def creation(current_user):
         return err.messages, 400
 
     name = data['name']
-    text = data['text']
     ingredients = [x.strip() for x in data['r_ingredients'].split(',')]
+    text = data['text']
 
     old_recipe = Recipe.query.filter_by(name=name).first()
     if old_recipe:
@@ -272,8 +273,8 @@ def search():
     recipes_by_text = Recipe.query.filter(Recipe.text.like(f'%{text}%'))
     r = recipes_by_name.union(recipes_by_ingredient).union(recipes_by_text).all()
 
-    all_recipes = get_rcp(r)
-    return {'Recipes': all_recipes}
+    all_rcp = get_rcp(r)
+    return {'Recipes': all_rcp}
 
 
 @app.route('/max_ing')
